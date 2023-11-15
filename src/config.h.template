@@ -1,0 +1,18 @@
+#define CONFIG_DEVICE_NAME "Test3"
+
+//WIFI Access
+#define CONFIG_SSID "YOUR_SSID"
+#define CONFIG_WPA2_PASSWORD "YOUR_PASSWORD"
+
+//Fixed IP or DHCP. Fore DHCP put 0.0.0.0 in IP, rest is irrelevant
+#define CONFIG_IP IPAddress(192, 168, 1, 100)
+#define CONFIG_GATEWAY IPAddress(192, 168, 1, 1)
+#define CONFIG_SUBNET IPAddress(255, 255, 255, 0)
+#define CONFIG_DNS1 IPAddress(192, 168, 1, 1)
+
+//MQTT Access
+#define CONFIG_MQTT_HOST IPAddress(192, 168, 1, 12)
+#define CONFIG_MQTT_PORT 1883
+
+
+
