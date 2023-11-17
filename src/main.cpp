@@ -3,6 +3,8 @@
 #include <ESP8266WiFi.h>
 #include <Ticker.h>
 #include <PubSubClient.h>
+#include <NTPClient.h>
+#include <WiFiUdp.h>
 
 //MQTT Queues
 #define MQTT_PUB_IP "iot/" CONFIG_DEVICE_NAME "/ip"
@@ -16,6 +18,8 @@ PubSubClient mqttClient(espClient);
 
 WiFiEventHandler wifiConnectHandler;
 WiFiEventHandler wifiDisconnectHandler;
+WiFiUDP ntpUDP;
+NTPClient timeClient(ntpUDP, "pool.ntp.org");
 
 long lastReconnectAttempt = 0;
 long lastStatus = 0;
@@ -167,6 +171,22 @@ boolean connectToMqtt(bool blocking) {
       mqttClient.publish("outTopic", "hello world");
       // ... and resubscribe
       mqttClient.subscribe("inTopic");
+
+
+      Serial.print("now: ");
+      Serial.println(millis());
+      Serial.println(timeClient.getFormattedTime());
+      //initialize NTP
+      timeClient.begin();
+        
+      timeClient.setTimeOffset(3600); // GMT +1 = 3600
+
+      //update time
+      timeClient.update();
+      Serial.println(timeClient.getFormattedTime());
+      Serial.print("now2: ");
+      Serial.println(millis());
+
     } else {
       Serial.print("!!! Disconnected from MQTT, state: ");
       Serial.print(mqttClient.state());
@@ -210,7 +230,6 @@ void onWifiConnect(const WiFiEventStationModeGotIP& event) {
   // print ESP8266 Local IP Address
   Serial.print("Connected to WiFi. local IP: ");
   Serial.println(event.ip);
-
 }
 
 //called on discounect from network and on each non-sucessfull reconnect (every second with setAutoReconnect(true)
