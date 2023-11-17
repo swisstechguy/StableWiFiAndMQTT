@@ -18,19 +18,21 @@ WiFiEventHandler wifiConnectHandler;
 WiFiEventHandler wifiDisconnectHandler;
 
 long lastReconnectAttempt = 0;
+long lastStatus = 0;
 
 wl_status_t printWiFiStatus();
 void setupWifi(bool blocking);
-boolean connectToMqtt();
+boolean connectToMqtt(bool blocking);
 void onWifiConnect(const WiFiEventStationModeGotIP& event);
 void onWifiDisconnect(const WiFiEventStationModeDisconnected& event);
+void processMqtt(bool blocking);
 /*void onMqttConnect(bool sessionPresent);
 void onMqttDisconnect(AsyncMqttClientDisconnectReason reason);
 void onMqttDisconnect(AsyncMqttClientDisconnectReason reason);
 */
 
 
-void callback(char* topic, byte* payload, unsigned int length) {
+void onMqttMsgReceive(char* topic, byte* payload, unsigned int length) {
   Serial.print("Message arrived [");
   Serial.print(topic);
   Serial.print("] ");
@@ -69,25 +71,12 @@ void setup() {
   //Serial.setDebugOutput(true); //debug for WiFi
 
 
-  //MQTT state handlers
+  //MQTT handlers
   mqttClient.setServer(CONFIG_MQTT_HOST, CONFIG_MQTT_PORT);
-  mqttClient.setCallback(callback);
-
-/*
-  mqttClient.onConnect(onMqttConnect);
-  mqttClient.onDisconnect(onMqttDisconnect);
-  //mqttClient.onSubscribe(onMqttSubscribe);
-  //mqttClient.onUnsubscribe(onMqttUnsubscribe);
-  //mqttClient.onPublish(onMqttPublish);
-  mqttClient.setServer(CONFIG_MQTT_HOST, CONFIG_MQTT_PORT);
-  // If your broker requires authentication(username and password), set them below
-  //mqttClient.setCredentials("REPlACE_WITH_YOUR_USER", "REPLACE_WITH_YOUR_PASSWORD");
- 
-  //mqttClient.onMessage(onMqttMessage);
-*/
+  mqttClient.setCallback(onMqttMsgReceive);
 
   //connect to WiFi, use blocking if the application needs network; use non-blocking if the application can run without network
-  setupWifi(true);
+  setupWifi(false);
 
   Serial.printf("\nafter connectToWifi: %lums\n",(millis() - startMillis));
 
@@ -103,52 +92,29 @@ void setup() {
   Main loop
 */
 void loop() {
-  Serial.print("loop: ");
-
-  //connect to MQTT
-  if (!mqttClient.connected()) {
-    long now = millis();
-    if (now - lastReconnectAttempt > 5000) {
-      lastReconnectAttempt = now;
-      // Attempt to reconnect
-      if (connectToMqtt()) {
-        lastReconnectAttempt = 0;
-      }
-    }
-  } else {
-    // Client connected
-
-    mqttClient.loop();
-  }
+  //needs to be called in short cycles. use blocking if the application needs MQTT; use non-blocking if the application can run without MQTT
+  processMqtt(true);
 
 
-  
-  printWiFiStatus();
-  
-  if(WiFi.isConnected()) {
+  //do something nice every 5s. don't sleep in loop, since mqtt needs to be called in short cycles
+  long now = millis();
+  if (now - lastStatus > 5000) {
+    lastStatus = now;
+    printWiFiStatus();
     Serial.printf("local IP: %s, SSID: %s, AP: %s, RSSI: %s\n", WiFi.localIP().toString().c_str(), WiFi.SSID().c_str(), WiFi.BSSIDstr().c_str(), String(WiFi.RSSI()).c_str());
+    Serial.println();
 
+    //send only if MQTT is connected
     if(mqttClient.connected()) {
       mqttClient.publish(MQTT_PUB_RSSI, String(WiFi.RSSI()).c_str());
       mqttClient.publish(MQTT_PUB_STATUS, "online");
     } else {
       Serial.println("no connection to MQTT at the moment");
     }
-  } else {
-    Serial.println("no network connection at the moment");
   }
-  Serial.println();
-  delay(5000);
 }
 
-/*
-  Network and MQTT functions
-*/
 
-/*
-  prepairs the network and connects to WiFi.
-  call it only once in setup
-*/
 void setupWifi(bool blocking) {
   //set correct mode of Wifi(Client mode)
   WiFi.mode(WIFI_STA);
@@ -187,28 +153,57 @@ void setupWifi(bool blocking) {
   }
 }
 
-boolean connectToMqtt() {
+boolean connectToMqtt(bool blocking) {
   Serial.println("trying to connect to MQTT server...");
   // Create a random client ID
   String clientId = "ESP8266Client-";
   clientId += String(random(0xffff), HEX);
 
   // Attempt to connect
-  if (mqttClient.connect(clientId.c_str())) {
-    Serial.println("connected");
-    // Once connected, publish an announcement...
-    mqttClient.publish("outTopic", "hello world");
-    // ... and resubscribe
-    mqttClient.subscribe("inTopic");
-  } else {
-    Serial.print("failed, rc=");
-    Serial.print(mqttClient.state());
-    Serial.println(" try again in 5 seconds");
-    // Wait 5 seconds before retrying
-    
-  }
+  do {
+    if (mqttClient.connect(clientId.c_str())) {
+      Serial.println("Connected to MQTT.");
+      // Once connected, publish an announcement...
+      mqttClient.publish("outTopic", "hello world");
+      // ... and resubscribe
+      mqttClient.subscribe("inTopic");
+    } else {
+      Serial.print("!!! Disconnected from MQTT, state: ");
+      Serial.print(mqttClient.state());
+      if(blocking) {
+        delay(2000);
+        Serial.println(".");
+      }
+      
+    }
+  } while (WiFi.isConnected() && !mqttClient.connected() && blocking);
+  
   return mqttClient.connected();
 }
+
+/*
+ makes sure we have a connection and processes the Messages received. triggers the call of the callback function
+*/
+void processMqtt(bool blocking) {
+  //if not connected, connect to MQTT
+  if (!mqttClient.connected()) {
+    long now = millis();
+    if (now - lastReconnectAttempt > 5000) {
+      lastReconnectAttempt = now;
+      // Attempt to reconnect
+      if (connectToMqtt(false)) {
+        lastReconnectAttempt = 0;
+      }
+    }
+  } else {
+    // MQTT connected, process the messages
+    mqttClient.loop();
+  }
+}
+
+
+
+
 
 //called on sucessful connect to network
 void onWifiConnect(const WiFiEventStationModeGotIP& event) {
@@ -224,39 +219,6 @@ void onWifiDisconnect(const WiFiEventStationModeDisconnected& event) {
   printWiFiStatus();
 }
 
-/*
-void onMqttConnect(bool sessionPresent) {
-  Serial.println("connected to MQTT server.");
-  String strIp = String(WiFi.localIP()[0]) + "." + String(WiFi.localIP()[1]) + "." + String(WiFi.localIP()[2]) + "." + String(WiFi.localIP()[3]);
-  
-  //publish status and IP
-  mqttClient.publish(MQTT_PUB_STATUS, 0, false, "online");
-  mqttClient.publish(MQTT_PUB_IP, 0, true, String(strIp).c_str());
-  
-  //subscribe to topics
- // mqttClient.subscribe(MQTT_SUB_CMD_FAN, 0);
-
-}
-
-void onMqttDisconnect(AsyncMqttClientDisconnectReason reason) {
-  Serial.printf("!!! Disconnected from MQTT. reason: %d, ",(int)reason);
-  printWiFiStatus();
-
-  //try to reconnect in 5s if the network is present. if it fails, this method will be called again.
-  if(WiFi.isConnected()) {
-    mqttReconnectTimer.once(5, connectToMqtt);
-  }
-}
-*/
-/*void onMqttSubscribe(uint16_t packetId, uint8_t qos) {
-  Serial.println("Subscribe acknowledged.");
-  Serial.print("  packetId: ");
-  Serial.println(packetId);
-  Serial.print("  qos: ");
-  Serial.println(qos);
-}*/
-
-
 
 
 /*
@@ -265,7 +227,7 @@ Helper functions
 
 wl_status_t printWiFiStatus() {
     wl_status_t status = WiFi.status();
-    Serial.print("WiFi Status");
+    Serial.print("WiFi Status: ");
     switch(status) {
         case WL_NO_SHIELD:
             Serial.println("WL_NO_SHIELD");
@@ -300,4 +262,5 @@ wl_status_t printWiFiStatus() {
     }
     
   return status;
-}
+}  
+
