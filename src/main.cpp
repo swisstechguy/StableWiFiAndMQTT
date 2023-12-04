@@ -33,6 +33,7 @@ void setupMqtt();
 void setupWifi(bool blocking);
 boolean connectToMqtt(bool blocking);
 void loopMqtt(bool blocking);
+void onMqttMsgReceive(char* topic, byte* payload, unsigned int length);
 void onWifiConnect(const WiFiEventStationModeGotIP& event);
 void onWifiDisconnect(const WiFiEventStationModeDisconnected& event);
 wl_status_t printWiFiStatus();
