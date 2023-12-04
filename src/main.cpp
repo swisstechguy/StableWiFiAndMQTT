@@ -1,64 +1,69 @@
+#include "MqttTopicFunctionMap.h"
 #include <config.h>
 #include <Arduino.h>
 #include <ESP8266WiFi.h>
 #include <Ticker.h>
 #include <PubSubClient.h>
-#include <NTPClient.h>
-#include <WiFiUdp.h>
 
 //MQTT Queues
-#define MQTT_PUB_IP "iot/" CONFIG_DEVICE_NAME "/ip"
-#define MQTT_PUB_STATUS "iot/" CONFIG_DEVICE_NAME "/status"
-#define MQTT_PUB_RSSI "iot/" CONFIG_DEVICE_NAME "/rssi"
+#define MQTT_PUB_CMD_LED "iot/" CONFIG_DEVICE_NAME "/command/led"
+#define MQTT_PUB_CMD_MSG "iot/" CONFIG_DEVICE_NAME "/command/msg"
 
+long lastJob = 0;
 
+/* 
+  Base Client with WiFi and MQTT 
+ */
+
+//MQTT status updates are sent by base client
+#define MQTT_PUB_STATUS_IP "iot/" CONFIG_DEVICE_NAME "/status/ip"
+#define MQTT_PUB_STATUS_UPTIME "iot/" CONFIG_DEVICE_NAME "/status/uptime"
+#define MQTT_PUB_STATUS_MSG "iot/" CONFIG_DEVICE_NAME "/status/msg"
+#define MQTT_PUB_STATUS_RSSI "iot/" CONFIG_DEVICE_NAME "/status/rssi"
+#define MQTT_PUB_STATUS_HEAP "iot/" CONFIG_DEVICE_NAME "/status/heap"
 
 WiFiClient espClient;
 PubSubClient mqttClient(espClient);
-
 WiFiEventHandler wifiConnectHandler;
 WiFiEventHandler wifiDisconnectHandler;
-WiFiUDP ntpUDP;
-NTPClient timeClient(ntpUDP, "pool.ntp.org");
 
-long lastReconnectAttempt = 0;
-long lastStatus = 0;
+struct MqttTopicFunctionMap mqttCommandMap;
 
-wl_status_t printWiFiStatus();
+void setupMqtt();
 void setupWifi(bool blocking);
 boolean connectToMqtt(bool blocking);
+void loopMqtt(bool blocking);
 void onWifiConnect(const WiFiEventStationModeGotIP& event);
 void onWifiDisconnect(const WiFiEventStationModeDisconnected& event);
-void processMqtt(bool blocking);
-/*void onMqttConnect(bool sessionPresent);
-void onMqttDisconnect(AsyncMqttClientDisconnectReason reason);
-void onMqttDisconnect(AsyncMqttClientDisconnectReason reason);
+wl_status_t printWiFiStatus();
+long lastReconnectAttempt = 0;
+long lastMqttStatus = 0;
+
+
+/*
+ Custom Functions for MQTT Commands
 */
+void displayMsg(const char* payload, bool payload_bool, int payload_int, float payload_float) {
+    Serial.printf("Hello, %s\n", payload);
+}
 
-
-void onMqttMsgReceive(char* topic, byte* payload, unsigned int length) {
-  Serial.print("Message arrived [");
-  Serial.print(topic);
-  Serial.print("] ");
-  for (unsigned int i = 0; i < length; i++) {
-    Serial.print((char)payload[i]);
-  }
-  Serial.println();
-
+void led(const char* payload, bool payload_bool, int payload_int, float payload_float) {
   // Switch on the LED if an 1 was received as first character
-  if ((char)payload[0] == '1') {
+  if (payload_bool) {
     digitalWrite(LED_BUILTIN, LOW);   // Turn the LED on (Note that LOW is the voltage level
     // but actually the LED is on; this is because
     // it is active low on the ESP-01)
   } else {
     digitalWrite(LED_BUILTIN, HIGH);  // Turn the LED off by making the voltage HIGH
   }
-
 }
 
 
+
+
+
 /*
-  once called at startup
+  setup: once called at startup
 */
 
 void setup() {
@@ -74,44 +79,48 @@ void setup() {
   Serial.println("\n*-*-*- Start up of Device " CONFIG_DEVICE_NAME);
   //Serial.setDebugOutput(true); //debug for WiFi
 
+  //prepair MQTT client
+  setupMqtt();
 
-  //MQTT handlers
-  mqttClient.setServer(CONFIG_MQTT_HOST, CONFIG_MQTT_PORT);
-  mqttClient.setCallback(onMqttMsgReceive);
+  //subscribe to the MQTT topics and give a reference to the functions. This function will be called as soon as we receive a mqtt msg for this topic. loopMqtt will process it.
+  //initializeMap(&mqttCommandMap, 0);
+  subscribeTopic(&mqttCommandMap, MQTT_PUB_CMD_MSG, displayMsg);
+  subscribeTopic(&mqttCommandMap, MQTT_PUB_CMD_LED, led);
 
-  //connect to WiFi, use blocking if the application needs network; use non-blocking if the application can run without network
+
+  //connect to WiFi, use blocking if the application needs network; use non-blocking if the application can run without network. with blocking we wait here for a connection
   setupWifi(false);
-
-  Serial.printf("\nafter connectToWifi: %lums\n",(millis() - startMillis));
-
 
   //messure time consumed to startup
   Serial.printf("setup done after %lums\n",(millis() - startMillis));
+
 }
-
-
 
 
 /*
   Main loop
+  
+  IMPORTANT: don't sleep in loop, since mqtt needs to be called in short cycles
+
 */
 void loop() {
   //needs to be called in short cycles. use blocking if the application needs MQTT; use non-blocking if the application can run without MQTT
-  processMqtt(true);
+  loopMqtt(false);
 
 
-  //do something nice every 5s. don't sleep in loop, since mqtt needs to be called in short cycles
+  //log status every 5s. don't sleep in loop, since mqtt needs to be called in short cycles
   long now = millis();
-  if (now - lastStatus > 5000) {
-    lastStatus = now;
+  if (now - lastJob > 60*1000) {
+    lastJob = now;
     printWiFiStatus();
     Serial.printf("local IP: %s, SSID: %s, AP: %s, RSSI: %s\n", WiFi.localIP().toString().c_str(), WiFi.SSID().c_str(), WiFi.BSSIDstr().c_str(), String(WiFi.RSSI()).c_str());
     Serial.println();
+  
+
 
     //send only if MQTT is connected
     if(mqttClient.connected()) {
-      mqttClient.publish(MQTT_PUB_RSSI, String(WiFi.RSSI()).c_str());
-      mqttClient.publish(MQTT_PUB_STATUS, "online");
+
     } else {
       Serial.println("no connection to MQTT at the moment");
     }
@@ -119,7 +128,25 @@ void loop() {
 }
 
 
+
+/*
+ 
+ Methods for Base Client with WiFi and MQTT
+
+*/
+
+
+void setupMqtt() {
+
+ //MQTT handlers
+  mqttClient.setServer(CONFIG_MQTT_HOST, CONFIG_MQTT_PORT);
+  mqttClient.setCallback(onMqttMsgReceive);
+
+}
+
 void setupWifi(bool blocking) {
+  //messure time consumed to startup
+  unsigned long startMillis = millis();
   //set correct mode of Wifi(Client mode)
   WiFi.mode(WIFI_STA);
   //Autoreconnect ist used for reconnecting in case of connection is lost
@@ -154,6 +181,7 @@ void setupWifi(bool blocking) {
       delay(500);
       Serial.println(".");
     }
+    Serial.printf("\nafter connectToWifi: %lums\n",(millis() - startMillis));
   }
 }
 
@@ -166,30 +194,25 @@ boolean connectToMqtt(bool blocking) {
   // Attempt to connect
   do {
     if (mqttClient.connect(clientId.c_str())) {
-      Serial.println("Connected to MQTT.");
-      // Once connected, publish an announcement...
-      mqttClient.publish("outTopic", "hello world");
-      // ... and resubscribe
-      mqttClient.subscribe("inTopic");
+      //reconnected, send status msg
+      long now = millis();
+      char status[200]; 
+      sprintf(status, "reconnected. uptime %lds IP: %s, SSID: %s, AP: %s, RSSI: %s, FREE_HEAP: %d\n", now/1000, WiFi.localIP().toString().c_str(), WiFi.SSID().c_str(), WiFi.BSSIDstr().c_str(), String(WiFi.RSSI()).c_str(), ESP.getFreeHeap()); 
+      Serial.printf(status);
+      mqttClient.publish(MQTT_PUB_STATUS_MSG, status);
 
-
-      Serial.print("now: ");
-      Serial.println(millis());
-      Serial.println(timeClient.getFormattedTime());
-      //initialize NTP
-      timeClient.begin();
-        
-      timeClient.setTimeOffset(3600); // GMT +1 = 3600
-
-      //update time
-      timeClient.update();
-      Serial.println(timeClient.getFormattedTime());
-      Serial.print("now2: ");
-      Serial.println(millis());
+      //subscribe to all registered topics
+      Serial.printf("connected, subscribe to all topics\n");
+      const char** keys = getAllTopics(&mqttCommandMap);
+      for (size_t i = 0; i < mqttCommandMap.size; ++i) {
+        Serial.printf("subscribe to %s\n", keys[i]);
+        mqttClient.subscribe(keys[i]);
+      }      
 
     } else {
       Serial.print("!!! Disconnected from MQTT, state: ");
       Serial.print(mqttClient.state());
+      Serial.println();
       if(blocking) {
         delay(2000);
         Serial.println(".");
@@ -204,25 +227,71 @@ boolean connectToMqtt(bool blocking) {
 /*
  makes sure we have a connection and processes the Messages received. triggers the call of the callback function
 */
-void processMqtt(bool blocking) {
+void loopMqtt(bool blocking) {
+  long now = millis();
   //if not connected, connect to MQTT
   if (!mqttClient.connected()) {
-    long now = millis();
+    
     if (now - lastReconnectAttempt > 5000) {
       lastReconnectAttempt = now;
       // Attempt to reconnect
       if (connectToMqtt(false)) {
         lastReconnectAttempt = 0;
+
       }
     }
   } else {
     // MQTT connected, process the messages
     mqttClient.loop();
+
+    //give status on MQTT
+    if (now - lastMqttStatus > CONFIG_MQTT_STATUS_REPORT*1000) {
+      lastMqttStatus = now;
+      mqttClient.publish(MQTT_PUB_STATUS_RSSI, String(WiFi.RSSI()).c_str());
+      mqttClient.publish(MQTT_PUB_STATUS_UPTIME, String(now/1000).c_str());
+      mqttClient.publish(MQTT_PUB_STATUS_HEAP, String(ESP.getFreeHeap()).c_str());
+    
+    }
   }
 }
 
 
+void onMqttMsgReceive(char* topic, byte* payload, unsigned int length) {
+  Serial.print("Message arrived [");
+  Serial.print(topic);
+  Serial.println("] ");
+  
+  //Attention: payload is a byte array and not a \0-terminated string!
 
+  //make a string from payload
+  //copy payload into char array and add \0 to make it a string
+  char str_payload[length+1];
+  str_payload[length] = '\0';
+  for (unsigned int i = 0; i < length; i++) {
+    str_payload[i] = (char)payload[i];
+  }
+  Serial.printf("payload as str  : %s\n",str_payload);
+
+  //make a int from payload
+  int int_payload = atoi(str_payload);
+  Serial.printf("payload as int  : %d\n",int_payload);
+
+  //make a boolean from payload
+  bool bool_payload = strcasecmp("on", str_payload) == 0;
+  Serial.printf("payload as bool : %d\n",bool_payload);
+  
+  //make a float from payload
+  float float_payload = atof(str_payload);
+  Serial.printf("payload as float: %f\n",float_payload);
+
+  //call the registered function
+  const FunctionPointer func = getFunctionByTopic(&mqttCommandMap, topic);
+  if (func != NULL) {
+      func(str_payload, bool_payload, int_payload, float_payload);
+  } else {
+      printf("function for topic '%s' not found\n", topic);
+  }
+}
 
 
 //called on sucessful connect to network

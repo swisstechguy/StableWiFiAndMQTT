@@ -1,0 +1,28 @@
+#include <stdio.h>
+#include <stdlib.h>
+#include <string.h>
+#include "FunctionMap.h"
+
+// Example functions to be stored in the map
+void greet(const char* name) {
+    printf("Hello, %s\n", name);
+}
+
+void saySomething(const char* message) {
+    printf("Saying: %s\n", message);
+}
+
+int main() {
+    struct SimpleMap myMap;
+    initializeMap(&myMap, 0);
+
+    put(&myMap, "greet", greet);
+    put(&myMap, "saySomething", saySomething);
+
+    executeFunction(&myMap, "greet", "John");
+    executeFunction(&myMap, "saySomething", "This is a message");
+
+    freeMap(&myMap);
+
+    return 0;
+}
