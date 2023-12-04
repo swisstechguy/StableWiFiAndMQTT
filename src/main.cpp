@@ -40,6 +40,22 @@ wl_status_t printWiFiStatus();
 long lastReconnectAttempt = 0;
 long lastMqttStatus = 0;
 
+/*
+Switch Debug output to Serial-Console ON and OFF in config.h
+*/
+#if DEBUG
+#define D_SerialBegin(...) Serial.begin(__VA_ARGS__);
+#define D_print(...)    Serial.print(__VA_ARGS__)
+#define D_println(...)  Serial.println(__VA_ARGS__)
+#define D_printf(...)  Serial.printf(__VA_ARGS__)
+#define D_write(...)    Serial.write(__VA_ARGS__)
+#else
+#define D_SerialBegin(...)
+#define D_print(...)
+#define D_printf(...)
+#define D_println(...)
+#define D_write(...)
+#endif
 
 /*
  Custom Functions for MQTT Commands
@@ -69,7 +85,9 @@ void led(const char* payload, bool payload_bool, int payload_int, float payload_
 
 void setup() {
   //messure time consumed to startup
+  #if DEBUG
   unsigned long startMillis = millis();
+  #endif
 
   //set up pins and initial states
   pinMode(LED_BUILTIN, OUTPUT);
@@ -77,7 +95,7 @@ void setup() {
 
   // Serial port for debugging
   Serial.begin(74880);
-  Serial.println("\n*-*-*- Start up of Device " CONFIG_DEVICE_NAME);
+  D_println("\n*-*-*- Start up of Device " CONFIG_DEVICE_NAME);
   //Serial.setDebugOutput(true); //debug for WiFi
 
   //prepair MQTT client
@@ -93,7 +111,7 @@ void setup() {
   setupWifi(false);
 
   //messure time consumed to startup
-  Serial.printf("setup done after %lums\n",(millis() - startMillis));
+  D_printf("setup done after %lums\n",(millis() - startMillis));
 
 }
 
@@ -136,23 +154,22 @@ void loop() {
 
 */
 
-
 void setupMqtt() {
-
  //MQTT handlers
   mqttClient.setServer(CONFIG_MQTT_HOST, CONFIG_MQTT_PORT);
   mqttClient.setCallback(onMqttMsgReceive);
-
 }
 
 void setupWifi(bool blocking) {
   //messure time consumed to startup
+  #if DEBUG
   unsigned long startMillis = millis();
+  #endif
   //set correct mode of Wifi(Client mode)
   WiFi.mode(WIFI_STA);
   //Autoreconnect ist used for reconnecting in case of connection is lost
   WiFi.setAutoReconnect(true);
-  Serial.printf("WiFi setup for MAC: %s, autoReconnect: %d\n", WiFi.macAddress().c_str(), WiFi.getAutoReconnect());
+  D_printf("WiFi setup for MAC: %s, autoReconnect: %d\n", WiFi.macAddress().c_str(), WiFi.getAutoReconnect());
 
   //WiFi state handler
   wifiConnectHandler = WiFi.onStationModeGotIP(onWifiConnect);
@@ -162,16 +179,16 @@ void setupWifi(bool blocking) {
   #ifdef CONFIG_IP
   // Set your Static IP configuration
   if(!WiFi.config(CONFIG_IP, CONFIG_GATEWAY, CONFIG_SUBNET, CONFIG_DNS1)) {
-    Serial.println("Cloud NOT set fixed IP, switch to DHCP");
+    D_println("Cloud NOT set fixed IP, switch to DHCP");
   } else {
-    Serial.print("Fixed IP set to: ");
-    Serial.println(CONFIG_IP);
+    D_print("Fixed IP set to: ");
+    D_println(CONFIG_IP);
   }
   #endif  
   
   // connect to Wi-Fi now
-  Serial.print("trying to connect to WiFi SSID: " CONFIG_SSID "...\n my MAC address: ");
-  Serial.println(WiFi.macAddress());
+  D_print("trying to connect to WiFi SSID: " CONFIG_SSID "...\n my MAC address: ");
+  D_println(WiFi.macAddress());
   
   //connect now
   WiFi.begin(CONFIG_SSID, CONFIG_WPA2_PASSWORD);
@@ -180,14 +197,14 @@ void setupWifi(bool blocking) {
   if(blocking) {
     while(WiFi.status() != WL_CONNECTED) {
       delay(500);
-      Serial.println(".");
+      D_println(".");
     }
-    Serial.printf("\nafter connectToWifi: %lums\n",(millis() - startMillis));
+    D_printf("\nafter connectToWifi: %lums\n",(millis() - startMillis));
   }
 }
 
 boolean connectToMqtt(bool blocking) {
-  Serial.println("trying to connect to MQTT server...");
+  D_println("trying to connect to MQTT server...");
   // Create a random client ID
   String clientId = "ESP8266Client-";
   clientId += String(random(0xffff), HEX);
@@ -199,24 +216,24 @@ boolean connectToMqtt(bool blocking) {
       long now = millis();
       char status[200]; 
       sprintf(status, "reconnected. uptime %lds IP: %s, SSID: %s, AP: %s, RSSI: %s, FREE_HEAP: %d\n", now/1000, WiFi.localIP().toString().c_str(), WiFi.SSID().c_str(), WiFi.BSSIDstr().c_str(), String(WiFi.RSSI()).c_str(), ESP.getFreeHeap()); 
-      Serial.printf(status);
+      D_printf(status);
       mqttClient.publish(MQTT_PUB_STATUS_MSG, status);
 
       //subscribe to all registered topics
-      Serial.printf("connected, subscribe to all topics\n");
+      D_printf("connected, subscribe to all topics\n");
       const char** keys = getAllTopics(&mqttCommandMap);
       for (size_t i = 0; i < mqttCommandMap.size; ++i) {
-        Serial.printf("subscribe to %s\n", keys[i]);
+        D_printf("subscribe to %s\n", keys[i]);
         mqttClient.subscribe(keys[i]);
       }      
 
     } else {
-      Serial.print("!!! Disconnected from MQTT, state: ");
-      Serial.print(mqttClient.state());
-      Serial.println();
+      D_print("!!! Disconnected from MQTT, state: ");
+      D_print(mqttClient.state());
+      D_println();
       if(blocking) {
         delay(2000);
-        Serial.println(".");
+        D_println(".");
       }
       
     }
@@ -258,9 +275,9 @@ void loopMqtt(bool blocking) {
 
 
 void onMqttMsgReceive(char* topic, byte* payload, unsigned int length) {
-  Serial.print("Message arrived [");
-  Serial.print(topic);
-  Serial.println("] ");
+  D_print("Message arrived [");
+  D_print(topic);
+  D_println("] ");
   
   //Attention: payload is a byte array and not a \0-terminated string!
 
@@ -271,23 +288,17 @@ void onMqttMsgReceive(char* topic, byte* payload, unsigned int length) {
   for (unsigned int i = 0; i < length; i++) {
     str_payload[i] = (char)payload[i];
   }
-  Serial.printf("payload as str  : %s\n",str_payload);
-
   //make a int from payload
   int int_payload = atoi(str_payload);
-  Serial.printf("payload as int  : %d\n",int_payload);
-
   //make a boolean from payload
   bool bool_payload = strcasecmp("on", str_payload) == 0;
-  Serial.printf("payload as bool : %d\n",bool_payload);
-  
   //make a float from payload
   float float_payload = atof(str_payload);
-  Serial.printf("payload as float: %f\n",float_payload);
 
   //call the registered function
   const FunctionPointer func = getFunctionByTopic(&mqttCommandMap, topic);
   if (func != NULL) {
+      D_printf("calling function(%s, %d, %d, %f)\n", str_payload, bool_payload, int_payload, float_payload);
       func(str_payload, bool_payload, int_payload, float_payload);
   } else {
       printf("function for topic '%s' not found\n", topic);
@@ -298,13 +309,13 @@ void onMqttMsgReceive(char* topic, byte* payload, unsigned int length) {
 //called on sucessful connect to network
 void onWifiConnect(const WiFiEventStationModeGotIP& event) {
   // print ESP8266 Local IP Address
-  Serial.print("Connected to WiFi. local IP: ");
-  Serial.println(event.ip);
+  D_print("Connected to WiFi. local IP: ");
+  D_println(event.ip);
 }
 
 //called on discounect from network and on each non-sucessfull reconnect (every second with setAutoReconnect(true)
 void onWifiDisconnect(const WiFiEventStationModeDisconnected& event) {
-  Serial.printf("!!! Disconnected from WiFi. reason: %d, ",(int)event.reason);
+  D_printf("!!! Disconnected from WiFi. reason: %d, ",(int)event.reason);
   printWiFiStatus();
 }
 
@@ -316,37 +327,37 @@ Helper functions
 
 wl_status_t printWiFiStatus() {
     wl_status_t status = WiFi.status();
-    Serial.print("WiFi Status: ");
+    D_print("WiFi Status: ");
     switch(status) {
         case WL_NO_SHIELD:
-            Serial.println("WL_NO_SHIELD");
+            D_println("WL_NO_SHIELD");
             return status;
         case WL_IDLE_STATUS:
-            Serial.println("WL_IDLE_STATUS");
+            D_println("WL_IDLE_STATUS");
             return status;
         case WL_NO_SSID_AVAIL:
-            Serial.println("WL_NO_SSID_AVAIL");
+            D_println("WL_NO_SSID_AVAIL");
             return status;
         case WL_SCAN_COMPLETED:
-            Serial.println("WL_SCAN_COMPLETED");
+            D_println("WL_SCAN_COMPLETED");
             return status;
         case WL_CONNECTED:
-            Serial.println("WL_CONNECTED");
+            D_println("WL_CONNECTED");
             return status;
         case WL_CONNECT_FAILED:
-            Serial.println("WL_CONNECT_FAILED");
+            D_println("WL_CONNECT_FAILED");
             return status;
         case WL_CONNECTION_LOST:
-            Serial.println("WL_CONNECTION_LOST");
+            D_println("WL_CONNECTION_LOST");
             return status;
         case WL_WRONG_PASSWORD:
-            Serial.println("WL_WRONG_PASSWORD");
+            D_println("WL_WRONG_PASSWORD");
             return status;
         case WL_DISCONNECTED:
-            Serial.println("WL_DISCONNECTED");
+            D_println("WL_DISCONNECTED");
             return status;
         default:
-            Serial.println("unknown");
+            D_println("unknown");
             return status;
     }
     
