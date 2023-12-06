@@ -16,11 +16,11 @@ long lastJob = 0;
  */
 
 //MQTT status updates are sent by base client
-#define MQTT_PUB_STATUS_IP "iot/" CONFIG_DEVICE_NAME "/status/ip"
-#define MQTT_PUB_STATUS_UPTIME "iot/" CONFIG_DEVICE_NAME "/status/uptime"
-#define MQTT_PUB_STATUS_MSG "iot/" CONFIG_DEVICE_NAME "/status/msg"
-#define MQTT_PUB_STATUS_RSSI "iot/" CONFIG_DEVICE_NAME "/status/rssi"
-#define MQTT_PUB_STATUS_HEAP "iot/" CONFIG_DEVICE_NAME "/status/heap"
+#define MQTT_PUB_STATUS_IP "iot/" CONFIG_DEVICE_NAME "/state/std/ip"
+#define MQTT_PUB_STATUS_UPTIME "iot/" CONFIG_DEVICE_NAME "/state/std/uptime"
+#define MQTT_PUB_STATUS_MSG "iot/" CONFIG_DEVICE_NAME "/state/std/msg"
+#define MQTT_PUB_STATUS_RSSI "iot/" CONFIG_DEVICE_NAME "/state/std/rssi"
+#define MQTT_PUB_STATUS_HEAP "iot/" CONFIG_DEVICE_NAME "/state/std/heap"
 
 WiFiClient espClient;
 PubSubClient mqttClient(espClient);
@@ -37,8 +37,8 @@ void onMqttMsgReceive(char* topic, byte* payload, unsigned int length);
 void onWifiConnect(const WiFiEventStationModeGotIP& event);
 void onWifiDisconnect(const WiFiEventStationModeDisconnected& event);
 wl_status_t printWiFiStatus();
-long lastReconnectAttempt = 0;
-long lastMqttStatus = 0;
+unsigned long lastReconnectAttempt = 0;
+unsigned long lastMqttStatus = 0;
 
 /*
 Switch Debug output to Serial-Console ON and OFF in config.h
@@ -129,6 +129,7 @@ void loop() {
 
   //log status every 5s. don't sleep in loop, since mqtt needs to be called in short cycles
   long now = millis();
+  
   if (now - lastJob > 60*1000) {
     lastJob = now;
     printWiFiStatus();
@@ -146,7 +147,12 @@ void loop() {
   }
 }
 
-
+/*
+ called after sending the standard status information to mqtt. can be used to send project specific state info to mqtt
+*/
+void sendCustomMqttState() {
+  
+}
 
 /*
  
@@ -268,7 +274,7 @@ void loopMqtt(bool blocking) {
       mqttClient.publish(MQTT_PUB_STATUS_RSSI, String(WiFi.RSSI()).c_str());
       mqttClient.publish(MQTT_PUB_STATUS_UPTIME, String(now/1000).c_str());
       mqttClient.publish(MQTT_PUB_STATUS_HEAP, String(ESP.getFreeHeap()).c_str());
-    
+      sendCustomMqttState(); //hock for project specifc state info
     }
   }
 }
